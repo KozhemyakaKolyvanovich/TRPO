@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Финансы - MySQL версия</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; }
+        body { background: #f0f2f5; padding: 20px; min-height: 100vh; }
+        .app-container { max-width: 1400px; margin: 0 auto; }
+        .card { background: white; border-radius: 24px; box-shadow: 0 8px 20px rgba(0,0,0,0.05); padding: 1.5rem; margin-bottom: 1.5rem; }
+        button { cursor: pointer; border: none; background: #f3f4f6; padding: 0.5rem 1rem; border-radius: 60px; font-weight: 500; transition: 0.2s; font-size: 0.9rem; }
+        button.primary { background: #1e3a8a; color: white; }
+        button.primary:hover { background: #1e40af; transform: translateY(-1px); }
+        button.danger { background: #fee2e2; color: #b91c1c; }
+        button.success { background: #e0f2fe; color: #0f3b5c; }
+        input, select, textarea { width: 100%; padding: 0.7rem 1rem; border-radius: 20px; border: 1px solid #cbd5e1; font-size: 0.95rem; }
+        .form-group { margin-bottom: 1rem; }
+        label { font-weight: 500; display: block; margin-bottom: 0.4rem; font-size: 0.85rem; color: #334155; }
+        .flex-row { display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: center; }
+        .grid-2col { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.5rem; }
+        .transaction-list { overflow-x: auto; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { text-align: left; padding: 1rem 0.5rem; border-bottom: 1px solid #e9eef3; }
+        .badge-income { background: #dcfce7; color: #15803d; padding: 0.2rem 0.7rem; border-radius: 40px; font-size: 0.75rem; font-weight: 600; }
+        .badge-expense { background: #ffe4e4; color: #b91c1c; padding: 0.2rem 0.7rem; border-radius: 40px; font-size: 0.75rem; font-weight: 600; }
+        .amount-positive { color: #15803d; font-weight: 600; }
+        .amount-negative { color: #b91c1c; font-weight: 600; }
+        .report-summary { background: #f8fafc; border-radius: 32px; padding: 1.2rem; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 1rem; }
+        .stat { text-align: center; flex: 1; }
+        .stat-value { font-size: 1.8rem; font-weight: 800; }
+        @media (max-width: 700px) { .stat-value { font-size: 1.3rem; } }
+        .auth-panel { display: flex; justify-content: flex-end; align-items: center; gap: 1rem; margin-bottom: 1rem; }
+        .filter-bar { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; margin-bottom: 1rem; }
+        .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); align-items: center; justify-content: center; z-index: 1000; }
+        .modal .card { max-width: 500px; width: 90%; }
+    </style>
+</head>
+<body>
+<div class="app-container" id="app"></div>
+
+<script>
+    const API_URL = 'http://localhost:3000/api';
+    let currentUser = null;
+    let currentFilter = { categoryId: "all", type: "all", dateFrom: "", dateTo: "" };
+    let editingTxnId = null;
+    let editingCatId = null;
+
+    async function apiRequest(endpoint, method, data) {
+        const response = await fetch(`${API_URL}${endpoint}`, {
+            method,
+            headers: { 'Content-Type': 'application/json' },
+            body: data ? JSON.stringify(data) : undefined
+        });
+        
+        if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.error || 'Ошибка запроса');
+        }
+        
+        return await response.json();
+    }
+
+    async function render() {
+        if (!currentUser) {
+            renderAuthScreen();
+            return;
+        }
+
+        try {
+            const [categories, transactions, report] = await Promise.all([
+                apiRequest(`/categories/${currentUser.id}`, 'GET'),
+                apiRequest(`/transactions/${currentUser.id}${buildFilterQuery()}`, 'GET'),
+                apiRequest(`/report/${currentUser.id}${buildFilterQuery()}`, 'GET')
+            ]);
+
+            renderMainScreen(categories, transactions, report);
+        } catch (error) {
+            console.error(error);
+            document.getElementById('app').innerHTML = `<div class="card">Ошибка: ${error.message}</div>`;
+        }
+    }
+
+    function buildFilterQuery() {
+        const params = new URLSearchParams();
+        if (currentFilter.categoryId && currentFilter.categoryId !== 'all') params.append('categoryId', currentFilter.categoryId);
+        if (currentFilter.type && currentFilter.type !== 'all') params.append('type', currentFilter.type);
+        if (currentFilter.dateFrom) params.append('dateFrom', currentFilter.dateFrom);
+        if (currentFilter.dateTo) params.append('dateTo', currentFilter.dateTo);
+        const query = params.toString();
+        return query ? `?${query}` : '';
+    }
+
+    function renderAuthScreen() {
+        const appDiv = document.getElementById('app');
+        appDiv.innerHTML = `
+            <div class="card" style="max-width:450px; margin: 40px auto;">
+                <h2>💰 Личные финансы (MySQL)</h2>
+                <p>Вход / Регистрация</p>
+                <div class="form-group"><label>Email</label><input id="loginEmail" placeholder="example@mail.com"></div>
+                <div class="form-group"><label>Пароль</label><input id="loginPassword" type="password" placeholder="пароль"></div>
+                <div class="flex-row"><button id="loginBtn" class="primary">Войти</button><button id="registerBtn" class="outline">Регистрация</button></div>
+                <div id="authError" class="error-msg" style="color:red; margin-top:10px;"></div>
+                <div style="margin-top:12px; font-size:0.8rem">Демо: demo@example.com / 123</div>
+            </div>
+        `;
+
+        document.getElementById('loginBtn').onclick = async () => {
+            const email = document.getElementById('loginEmail').value;
+            const password = document.getElementById('loginPassword').value;
+            try {
+                const result = await apiRequest('/login', 'POST', { email, password });
+                currentUser = result.user;
+                render();
+            } catch (error) {
+                document.getElementById('authError').innerText = error.message;
+            }
+        };
+
+        document.getElementById('registerBtn').onclick = async () => {
+            const email = document.getElementById('loginEmail').value;
+            const password = document.getElementById('loginPassword').value;
+            try {
+                await apiRequest('/register', 'POST', { email, password });
+                const result = await apiRequest('/login', 'POST', { email, password });
+                currentUser = result.user;
+                render();
+            } catch (error) {
+                document.getElementById('authError').innerText = error.message;
+            }
+        };
+    }
+
+    function renderMainScreen(categories, transactions, report) {
+        const appDiv = document.getElementById('app');
+        appDiv.innerHTML = `
+            <div class="auth-panel">
+                <span class="welcome">👋 ${currentUser.email}</span>
+                <button id="logoutBtn" class="outline">Выйти</button>
+            </div>
+            <div class="grid-2col">
+                <div>
+                    <div class="card">
+                        <h3>➕ Новая операция</h3>
+                        <div class="form-group"><label>Сумма (₽)</label><input type="number" id="txnAmount" step="any" min="0.01"></div>
+                        <div class="form-group"><label>Дата</label><input type="date" id="txnDate" value="${new Date().toISOString().slice(0,10)}"></div>
+                        <div class="form-group"><label>Категория</label><select id="txnCategory">${categories.map(c => `<option value="${c.id}">${c.name} (${c.type === 'income' ? 'Доход' : 'Расход'})</option>`).join('')}</select></div>
+                        <div class="form-group"><label>Комментарий</label><input type="text" id="txnComment" placeholder="Необязательно"></div>
+                        <button id="addTxnBtn" class="primary" style="width:100%">➕ Добавить транзакцию</button>
+                    </div>
+                    <div class="card">
+                        <h3>📂 Управление категориями</h3>
+                        <div id="categoriesList"></div>
+                        <hr>
+                        <div class="flex-row">
+                            <input type="text" id="newCatName" placeholder="Название категории" style="flex:2">
+                            <select id="newCatType" style="flex:1"><option value="income">Доход</option><option value="expense">Расход</option></select>
+                            <button id="addCategoryBtn" class="success">➕ Добавить</button>
+                        </div>
+                    </div>
+                </div>
+                <div>
+                    <div class="card">
+                        <h3>📊 Отчёт по фильтру</h3>
+                        <div class="report-summary">
+                            <div class="stat"><div>💰 Доходы</div><div class="stat-value amount-positive">${report.totalIncome} ₽</div></div>
+                            <div class="stat"><div>💸 Расходы</div><div class="stat-value amount-negative">${report.totalExpense} ₽</div></div>
+                            <div class="stat"><div>⚖️ Баланс</div><div class="stat-value ${report.balance >= 0 ? 'amount-positive' : 'amount-negative'}">${report.balance} ₽</div></div>
+                        </div>
+                    </div>
+                    <div class="card">
+                        <h3>🔍 Фильтрация</h3>
+                        <div class="filter-bar">
+                            <div class="filter-group"><label>Категория</label><select id="filterCategory"><option value="all">Все категории</option>${categories.map(c => `<option value="${c.id}">${c.name}</option>`).join('')}</select></div>
+                            <div class="filter-group"><label>Тип</label><select id="filterType"><option value="all">Все</option><option value="income">Доходы</option><option value="expense">Расходы</option></select></div>
+                            <div class="filter-group"><label>Дата с</label><input type="date" id="filterDateFrom"></div>
+                            <div class="filter-group"><label>Дата по</label><input type="date" id="filterDateTo"></div>
+                            <button id="resetFilterBtn" class="outline">Сбросить</button>
+                        </div>
+                    </div>
+                    <div class="card">
+                        <h3>📋 История операций</h3>
+                        <div class="transaction-list">
+                            <table><thead><tr><th>Дата</th><th>Сумма</th><th>Категория</th><th>Комментарий</th><th></th></tr></thead>
+                            <tbody id="transactionsTableBody">${transactions.map(txn => `
+                                <tr>
+                                    <td>${txn.date}</td>
+                                    <td class="${txn.category_type === 'income' ? 'amount-positive' : 'amount-negative'}">${txn.amount} ₽</td>
+                                    <td>${txn.category_name} <span class="${txn.category_type === 'income' ? 'badge-income' : 'badge-expense'}">${txn.category_type === 'income' ? 'Доход' : 'Расход'}</span></td>
+                                    <td>${txn.comment || '—'}</td>
+                                    <td class="actions-cell"><button class="icon-btn edit-txn" data-id="${txn.id}">✏️</button><button class="icon-btn danger delete-txn" data-id="${txn.id}">🗑️</button></td>
+                                </tr>`).join('')}</tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div id="editModal" class="modal"><div class="card"><h3>✏️ Редактировать транзакцию</h3><div class="form-group"><label>Сумма</label><input type="number" id="editAmount"></div><div class="form-group"><label>Дата</label><input type="date" id="editDate"></div><div class="form-group"><label>Категория</label><select id="editCategory">${categories.map(c => `<option value="${c.id}">${c.name}</option>`).join('')}</select></div><div class="form-group"><label>Комментарий</label><input id="editComment"></div><div class="flex-row"><button id="saveEditBtn" class="primary">Сохранить</button><button id="cancelEditBtn" class="outline">Отмена</button></div></div></div>
+            <div id="editCatModal" class="modal"><div class="card"><h3>✏️ Редактировать категорию</h3><div class="form-group"><label>Название</label><input id="editCatName"></div><div class="form-group"><label>Тип</label><select id="editCatType"><option value="income">Доход</option><option value="expense">Расход</option></select></div><div class="flex-row"><button id="saveCatEditBtn" class="primary">Сохранить</button><button id="cancelCatEditBtn" class="outline">Отмена</button></div></div></div>
+        `;
+
+        document.getElementById('logoutBtn').onclick = () => { currentUser = null; render(); };
+        document.getElementById('addTxnBtn').onclick = async () => {
+            const amount = document.getElementById('txnAmount').value;
+            const date = document.getElementById('txnDate').value;
+            const categoryId = document.getElementById('txnCategory').value;
+            const comment = document.getElementById('txnComment').value;
+            if (!amount || amount <= 0) { alert('Введите сумму'); return; }
+            await apiRequest('/transactions', 'POST', { userId: currentUser.id, amount, date, categoryId, comment });
+            render();
+        };
+        
+        document.getElementById('addCategoryBtn').onclick = async () => {
+            const name = document.getElementById('newCatName').value;
+            const type = document.getElementById('newCatType').value;
+            await apiRequest('/categories', 'POST', { userId: currentUser.id, name, type });
+            render();
+        };
+
+        setupFilters();
+        setupTransactionButtons(categories);
+        setupCategoryButtons();
+    }
+
+    function setupFilters() {
+        const filterCategory = document.getElementById('filterCategory');
+        const filterType = document.getElementById('filterType');
+        const filterDateFrom = document.getElementById('filterDateFrom');
+        const filterDateTo = document.getElementById('filterDateTo');
+        const resetBtn = document.getElementById('resetFilterBtn');
+        
+        const updateFilter = () => {
+            currentFilter = {
+                categoryId: filterCategory?.value || 'all',
+                type: filterType?.value || 'all',
+                dateFrom: filterDateFrom?.value || '',
+                dateTo: filterDateTo?.value || ''
+            };
+            render();
+        };
+        
+        filterCategory?.addEventListener('change', updateFilter);
+        filterType?.addEventListener('change', updateFilter);
+        filterDateFrom?.addEventListener('change', updateFilter);
+        filterDateTo?.addEventListener('change', updateFilter);
+        resetBtn?.addEventListener('click', () => {
+            if(filterCategory) filterCategory.value = 'all';
+            if(filterType) filterType.value = 'all';
+            if(filterDateFrom) filterDateFrom.value = '';
+            if(filterDateTo) filterDateTo.value = '';
+            updateFilter();
+        });
+    }
+
+    function setupTransactionButtons(categories) {
+        document.querySelectorAll('.edit-txn').forEach(btn => {
+            btn.onclick = async () => {
+                const id = btn.getAttribute('data-id');
+                editingTxnId = id;
+                const modal = document.getElementById('editModal');
+                const [transactions] = await Promise.all([apiRequest(`/transactions/${currentUser.id}`, 'GET')]);
+                const txn = transactions.find(t => t.id == id);
+                if (txn) {
+                    document.getElementById('editAmount').value = txn.amount;
+                    document.getElementById('editDate').value = txn.date;
+                    document.getElementById('editCategory').value = txn.category_id;
+                    document.getElementById('editComment').value = txn.comment || '';
+                    modal.style.display = 'flex';
+                }
+            };
+        });
+        
+        document.querySelectorAll('.delete-txn').forEach(btn => {
+            btn.onclick = async () => {
+                if (confirm('Удалить транзакцию?')) {
+                    await apiRequest(`/transactions/${btn.getAttribute('data-id')}`, 'DELETE', { userId: currentUser.id });
+                    render();
+                }
+            };
+        });
+        
+        document.getElementById('saveEditBtn')?.addEventListener('click', async () => {
+            const amount = document.getElementById('editAmount').value;
+            const date = document.getElementById('editDate').value;
+            const categoryId = document.getElementById('editCategory').value;
+            const comment = document.getElementById('editComment').value;
+            await apiRequest(`/transactions/${editingTxnId}`, 'PUT', { userId: currentUser.id, amount, date, categoryId, comment });
+            document.getElementById('editModal').style.display = 'none';
+            render();
+        });
+        
+        document.getElementById('cancelEditBtn')?.addEventListener('click', () => {
+            document.getElementById('editModal').style.display = 'none';
+        });
+    }
+
+    function setupCategoryButtons() {
+        document.querySelectorAll('.edit-cat').forEach(btn => {
+            btn.onclick = () => {
+                editingCatId = btn.getAttribute('data-id');
+                const modal = document.getElementById('editCatModal');
+                modal.style.display = 'flex';
+            };
+        });
+        
+        document.querySelectorAll('.delete-cat').forEach(btn => {
+            btn.onclick = async () => {
+                if (confirm('Удалить категорию?')) {
+                    try {
+                        await apiRequest(`/categories/${btn.getAttribute('data-id')}`, 'DELETE', { userId: currentUser.id });
+                        render();
+                    } catch (error) {
+                        alert(error.message);
+                    }
+                }
+            };
+        });
+        
+        document.getElementById('saveCatEditBtn')?.addEventListener('click', async () => {
+            const name = document.getElementById('editCatName').value;
+            const type = document.getElementById('editCatType').value;
+            await apiRequest(`/categories/${editingCatId}`, 'PUT', { userId: currentUser.id, name, type });
+            document.getElementById('editCatModal').style.display = 'none';
+            render();
+        });
+        
+        document.getElementById('cancelCatEditBtn')?.addEventListener('click', () => {
+            document.getElementById('editCatModal').style.display = 'none';
+        });
+    }
+
+    render();
+</script>
+</body>
+</html>
